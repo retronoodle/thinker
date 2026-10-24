@@ -11,6 +11,7 @@ class LaravelBootstrap
 {
     protected Container $container;
     protected bool $isBooted = false;
+    protected ?string $databaseConfigPath = null;
 
     public function __construct()
     {
@@ -23,69 +24,76 @@ class LaravelBootstrap
             return $this->container;
         }
 
-        $this->setupContainer();
-        $this->setupDatabase();
         $this->setupEvents();
         $this->setupFilesystem();
+        $this->setupDatabase();
+
+        Container::setInstance($this->container);
 
         $this->isBooted = true;
 
         return $this->container;
     }
 
-    protected function setupContainer(): void
-    {
-        Container::setInstance($this->container);
-    }
-
-    protected function setupDatabase(): void
-    {
-        $capsule = new Capsule();
-        
-        // Try to load Laravel config if available
-        $configPath = $this->findLaravelConfigPath();
-        if ($configPath && file_exists($configPath . '/database.php')) {
-            $config = require $configPath . '/database.php';
-            $defaultConnection = $config['default'] ?? 'mysql';
-            
-            if (isset($config['connections'][$defaultConnection])) {
-                $capsule->addConnection($config['connections'][$defaultConnection]);
-            }
-        }
-
-        $capsule->setAsGlobal();
-        $capsule->bootEloquent();
-
-        $this->container->instance('db', $capsule);
-    }
-
     protected function setupEvents(): void
     {
-        $events = new Dispatcher($this->container);
-        $this->container->instance('events', $events);
+        $this->container->instance('events', new Dispatcher($this->container));
     }
 
     protected function setupFilesystem(): void
     {
-        $filesystem = new Filesystem();
-        $this->container->instance('files', $filesystem);
+        $this->container->instance('files', new Filesystem());
     }
 
-    protected function findLaravelConfigPath(): ?string
+    protected function setupDatabase(): void
     {
-        $currentPath = getcwd();
-        
-        // Look for Laravel application structure
-        $paths = [
-            $currentPath . '/config',
-            $currentPath . '/../config',
-            $currentPath . '/../../config'
-        ];
+        $configPath = $this->findDatabaseConfigPath();
 
-        foreach ($paths as $path) {
-            if (is_dir($path) && file_exists($path . '/app.php')) {
-                return $path;
+        if ($configPath === null) {
+            throw new \RuntimeException('No Laravel database configuration found.');
+        }
+
+        $config = require $configPath;
+
+        if (!is_array($config) || !isset($config['connections']) || !is_array($config['connections'])) {
+            throw new \RuntimeException("Invalid database configuration in {$configPath}.");
+        }
+
+        $default = $config['default'] ?? 'default';
+
+        if (!isset($config['connections'][$default])) {
+            throw new \RuntimeException("Default database connection [{$default}] is not configured.");
+        }
+
+        $capsule = new Capsule($this->container);
+        $capsule->addConnection($config['connections'][$default], $default);
+        $capsule->getDatabaseManager()->setDefaultConnection($default);
+        $capsule->setEventDispatcher($this->container->make('events'));
+        $capsule->setAsGlobal();
+        $capsule->bootEloquent();
+
+        $this->databaseConfigPath = $configPath;
+        $this->container->instance('db', $capsule);
+    }
+
+    protected function findDatabaseConfigPath(): ?string
+    {
+        $directory = getcwd();
+
+        while ($directory !== false && $directory !== '') {
+            $candidate = $directory . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'database.php';
+
+            if (is_file($candidate)) {
+                return $candidate;
             }
+
+            $parent = dirname($directory);
+
+            if ($parent === $directory) {
+                break;
+            }
+
+            $directory = $parent;
         }
 
         return null;
@@ -99,5 +107,10 @@ class LaravelBootstrap
     public function isBooted(): bool
     {
         return $this->isBooted;
+    }
+
+    public function getDatabaseConfigPath(): ?string
+    {
+        return $this->databaseConfigPath;
     }
 }

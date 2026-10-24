@@ -12,6 +12,6 @@ class Application extends ConsoleApplication
         parent::__construct('Thinker', '1.0.0');
         
         $this->add(new ReplCommand());
-        $this->setDefaultCommand('repl', true);
+        $this->setDefaultCommand('repl');
     }
 }
